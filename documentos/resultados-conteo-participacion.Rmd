@@ -1,0 +1,236 @@
+---
+title: "Estimación de participación en el Conteo Rápido"
+output: html_notebook
+bibliography: 
+ - "../referencias/referencias.bib"
+ - "../referencias/paquetes.bib"
+---
+
+
+```{r}
+library(cmdstanr)
+library(posterior)
+library(tidyverse)
+library(patchwork)
+source("../R/simular_resumenes.R")
+```
+
+### Problema
+
+Para dar resultados en la noche de las elecciones, el INE diseña y selecciona
+una muestra de casillas de las que se recogen los datos en cuanto la casilla
+cierra. De esta manera no es necesario esperar a que todos los datos sean
+registrados y validados para dar los resultados finales, lo cual puede tomar varios
+días.
+
+En este caso buscamos estimar la participación nacional 
+(porcentaje de votantes registrados que emitió su voto) con los datos
+de la muestra de casillas.
+
+### Análisis conceptual
+
+El diseño de la muestra es estratificado, con tamaño de muestra proporcional
+al tamaño (5%).
+
+- Los estratos son distritos electorales.
+- Cada distrito electoral incluye varias casillas
+- El tamaño de los estratos se mide con el número de votantes registrados en todo el estrato.
+
+El marco muestral es el listado de todas las casillas:
+
+
+```{r}
+load("../datos/marco_nal_2018.rda")
+marco_nal_2018 %>% head
+```
+Tenemos información de:
+
+- Localización de la casilla (estrato, estado)
+- Tamaño de la lista nominal en cada casilla
+- Si la casilla está en una zona rural o no.
+
+Este es un problema de muestreo para población finita, y lo enfocamos 
+de esa manera:
+
+- Tenemos, para la muestra, número de votos que se emitieron y tamaño de la lista nominal ($y_i$, $n_i$), cuando $i\in S$
+- A partir de estos datos, queremos estimar $y_i$ con $\hat{y}_i$ para $i\notin S$
+- Estimaremos la participación como
+$$\frac{\sum_{i\in S} y_i + \sum_{i\notin S} y_i}{\sum_i n_i}$$
+Tenemos incertidumbre porque no observamos las $y_i$ fuera de la muestra.
+
+Históricamente, las participación en elecciones presidenciales en México
+ha oscilado entre el 40% y el 77% desde 1988 hasta 2020 (**referencia**)
+
+### Espacio de observaciones
+
+Las observaciones están dadas por conteos de las casillas en la 
+muestra del número total de votos. 
+
+```{stan, eval = FALSE}
+data {
+  // datos fijos
+  int num_estratos;
+  int n_est[num_estratos]; // num casillas por estrato 
+  int N; // num casillas total
+  int m_nominal[N]; // tamaño de lista nominal en cada casilla
+  int est[N]; // indicador de estrato para cada casilla
+  int n; // tamaño de muestra
+  int muestra[n]; //indices de casillas en la muestra
+  // observaciones
+  int y_obs[n]; // conteos en cada casilla de votos totales
+}
+```
+
+### Estadísticas resumen
+
+Nuestras estadísticas resumen principales son:
+
+- La participación sobre todas las casillas definido arriba
+- Participación en cada estado.
+
+### Desarrollo del modelo
+
+Las observación para una casilla particular en la muestra es $y_i$, y suponemos
+dada la lista nominal $n_i$.
+
+
+$$y_i = p_i / {n}_i$$
+y modelamos como sigue:
+
+Supongamos que cada estrato tiene parámetros $p_{est}$ de partipación, y que
+en cada casilla la probabilidad de que un votante ejerza su voto es $p_{est(i)}$.
+Si en cada estrato los votantes votaran independientemente unos de otros,
+tendríamos que el valor esperado de votos en cada casilla es 
+$n_ip_{est(i)}$ con varianza $n_ip_{est(i)}(1-p_{est(i)})$. Probablemente
+este supuesto no es correcto, porque los votantes de las casillas pueden comunicarse,
+son comunidades con cierta homogeneidad, etc. Podriamos sin embargo
+agregar un parámetro de sobre o sub dispersión con respecto a la binomial, y
+modelar
+
+$$y_i \sim \mathsf{Normal} \left (n_ip_{est(i)}, \sigma_{est(i)}^2n_ip_{est(i)}(1-p_{est(i)}) \right)$$
+De modo que
+
+$$p_i \sim \mathsf{Normal} \left (p_{est(i)}, \frac{\sigma_{est(i)}^2p_{est(i)}(1-p_{est(i)})}{n_i} \right)$$
+
+y consideramos las observaciones $p_i$ independientes dado los parámetros
+del estrato.
+
+Ahora es neceario poner distribuciones iniciales. En primer lugar,
+no creemos que las $p_{est(i)}$ sean independientes, pues dependen del interés
+general de la población en cada elección particular.
+
+$$p_{est(i)} \sim \mathsf{Beta}(\mu, \kappa)$$
+Para la $\mu$, podemos usar datos históricos para establecer
+
+$$\mu \sim \mathsf{Beta}(0.6, 20)$$
+
+```{r}
+mu_0 <- 0.6
+kappa_0 <- 10
+qbeta(c(0.01, 0.05, 0.5, 0.95, 0.99), mu_0*kappa_0, (1-mu_0)*kappa_0)
+```
+
+De modo que establecemos que es poco probable que la media sobre los
+estratos sea menor a 40% o más grande de 78%, de acuerdo con la información
+de elecciones anteriores.
+
+Para la dispersión $\kappa$ usamos
+
+$$\kappa \sim \mathsf{Gamma}(4, 0.4)$$
+
+```{r}
+m <- 200
+cv <- 0.75
+a <- (1/cv)^2
+b <- a/m
+c(a, b)
+cuantiles <- qgamma(c(0.01, 0.99), a, b)
+cuantiles
+```
+
+Supongamos que $\mu = 0.6$. Entonces las posibilidades para las porporciones
+de votos sobre los estratos son
+
+```{r, message= FALSE}
+p_1 <- qplot(rbeta(500, 0.25*cuantiles[1], (1-0.25)*cuantiles[1])) 
+p_2 <- qplot(rbeta(500, 0.25*cuantiles[2], (1-0.25)*cuantiles[2]))
+p_3 <- qplot(rbeta(500, 0.89*cuantiles[1], (1-0.89)*cuantiles[1]))
+p_4 <- qplot(rbeta(500, 0.89*cuantiles[2], (1-0.89)*cuantiles[2]))
+(p_1 + p_2) / (p_3 + p_4)
+```
+Consideramos todas estas combinaciones como casos límite de posibles
+resultados, pero creemos que no son extremadamente improbables.
+
+Ahora tenemos que poner una inicial para $\sigma_{est}$. Usaremos
+$$\log\sigma_{est(i)} \sim N(0, \sigma)$$
+con 
+$$\sigma \sim U(0.1, 10)$$
+
+
+
+Verificaremos simulando el ensemble bayesiano y calculando nuestras medidas resumen.
+
+### Simular ensamble bayesiano
+
+
+```{r}
+sim_datos <- jsonlite::read_json("../datos/datos_prueba.json", simplifyVector = TRUE)
+parametros <- jsonlite::read_json("../datos/datos_inicial.json", simplifyVector = TRUE)
+print(parametros)
+```
+
+
+```{r, message=FALSE, include=FALSE}
+sim_ensemble_datos <- c(sim_datos, parametros)
+ruta <- file.path("../stan/simular_ensemble_modelo.stan")
+modelo_inicial <- cmdstan_model(ruta)
+ensemble <- simular_ensemble(modelo_inicial, sim_ensemble_datos, 100)
+```
+
+
+
+### Ajustar al ensemble simulado
+
+Ahora veremos si podemos ajustar el modelo al ensemble simulado
+
+```{r}
+num_iter <- 17
+sim <- ensemble$draws("y") %>% as_draws_df() %>% 
+  as_tibble() %>% 
+  filter(.draw == num_iter)  %>% 
+  select(-.iteration, -.chain, -.draw) %>% as.numeric()
+```
+
+
+```{r}
+ruta <- file.path("../stan/modelo.stan")
+modelo <- cmdstan_model(ruta)
+```
+
+
+```{r}
+datos_1 <- c(sim_ensemble_datos, list("y" = ventas_sim %>% as.numeric))
+ajuste <- modelo$sample(data = datos_1,
+                          seed = 2210,
+                          iter_sampling = 500, iter_warmup = 500,
+                          refresh = 100, parallel_chains = 4,
+                          show_messages = FALSE)
+ajuste
+```
+
+```{r}
+ajuste$cmdstan_diagnose()
+```
+
+
+
+### Calibración inferencial
+
+### Ajuste a las observaciones
+
+### Verificación posterior dentro de muestra
+
+### Siguientes pasos
+
+### Conclusiones
+
