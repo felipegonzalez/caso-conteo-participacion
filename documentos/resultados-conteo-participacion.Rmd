@@ -30,18 +30,23 @@ de la muestra de casillas.
 ### Análisis conceptual
 
 El diseño de la muestra es estratificado, con tamaño de muestra proporcional
-al tamaño (5%).
+al tamaño de cada estrato. Se dicidió muestrar 5% de las casillas de cada estrato.
+
+Los estratos son principalmente dados por distritos electorales, aunque algunos
+distritos más chicos se unen para tener un mínimo de casillas especificado:
 
 - Los estratos son distritos electorales.
 - Cada distrito electoral incluye varias casillas
-- El tamaño de los estratos se mide con el número de votantes registrados en todo el estrato.
+- El tamaño de los estratos se mide con el número de casillas en todo el estrato.
 
 El marco muestral es el listado de todas las casillas:
 
 
 ```{r}
 load("../datos/marco_nal_2018.rda")
-marco_nal_2018 %>% head
+marco_tbl <- marco_nal_2018 %>% 
+  select(id, casilla_id, estrato, ln) 
+marco_tbl
 ```
 Tenemos información de:
 
@@ -60,6 +65,12 @@ Tenemos incertidumbre porque no observamos las $y_i$ fuera de la muestra.
 
 Históricamente, las participación en elecciones presidenciales en México
 ha oscilado entre el 40% y el 77% desde 1988 hasta 2020 (**referencia**)
+
+Algunas casillas especiales no tiene lista nominal fija. Estas casillas serán
+excluídas del cálculo, aunque quisiéramos reportar también estimaciones del 
+total de votos
+emitidos
+
 
 ### Espacio de observaciones
 
@@ -126,7 +137,7 @@ $$\mu \sim \mathsf{Beta}(0.6, 20)$$
 
 ```{r}
 mu_0 <- 0.6
-kappa_0 <- 10
+kappa_0 <- 20
 qbeta(c(0.01, 0.05, 0.5, 0.95, 0.99), mu_0*kappa_0, (1-mu_0)*kappa_0)
 ```
 
@@ -136,14 +147,15 @@ de elecciones anteriores.
 
 Para la dispersión $\kappa$ usamos
 
-$$\kappa \sim \mathsf{Gamma}(4, 0.4)$$
+$$\kappa \sim \mathsf{Gamma}(1, 0.001)$$
 
 ```{r}
-m <- 200
-cv <- 0.75
+m <- 1000
+cv <- 1
 a <- (1/cv)^2
 b <- a/m
 c(a, b)
+#a <- 1.5; b <- 0.02
 cuantiles <- qgamma(c(0.01, 0.99), a, b)
 cuantiles
 ```
@@ -152,20 +164,17 @@ Supongamos que $\mu = 0.6$. Entonces las posibilidades para las porporciones
 de votos sobre los estratos son
 
 ```{r, message= FALSE}
-p_1 <- qplot(rbeta(500, 0.25*cuantiles[1], (1-0.25)*cuantiles[1])) 
-p_2 <- qplot(rbeta(500, 0.25*cuantiles[2], (1-0.25)*cuantiles[2]))
-p_3 <- qplot(rbeta(500, 0.89*cuantiles[1], (1-0.89)*cuantiles[1]))
-p_4 <- qplot(rbeta(500, 0.89*cuantiles[2], (1-0.89)*cuantiles[2]))
+p_1 <- qplot(rbeta(500, 0.4*cuantiles[1], (1-0.4)*cuantiles[1])) 
+p_2 <- qplot(rbeta(500, 0.4*cuantiles[2], (1-0.4)*cuantiles[2]))
+p_3 <- qplot(rbeta(500, 0.8*cuantiles[1], (1-0.8)*cuantiles[1]))
+p_4 <- qplot(rbeta(500, 0.8*cuantiles[2], (1-0.8)*cuantiles[2]))
 (p_1 + p_2) / (p_3 + p_4)
 ```
 Consideramos todas estas combinaciones como casos límite de posibles
 resultados, pero creemos que no son extremadamente improbables.
 
 Ahora tenemos que poner una inicial para $\sigma_{est}$. Usaremos
-$$\log\sigma_{est(i)} \sim N(0, \sigma)$$
-con 
-$$\sigma \sim U(0.1, 10)$$
-
+$$\log\sigma_{est(i)} \sim N(0, 1)$$
 
 
 Verificaremos simulando el ensemble bayesiano y calculando nuestras medidas resumen.
@@ -174,18 +183,48 @@ Verificaremos simulando el ensemble bayesiano y calculando nuestras medidas resu
 
 
 ```{r}
+set.seed(9913)
+prop <- 0.05
+## suponemos que la muestra se ha decidido
+muestra_tbl <- marco_tbl %>%  group_by(estrato) %>% 
+  mutate(seleccionada = rbinom(n(), 1, prop))
+nrow(muestra_tbl %>% filter(seleccionada==1)) / nrow(muestra_tbl)
+muestra <- muestra_tbl %>% filter(seleccionada==1) %>% 
+  pull(casilla_id)
+n <- length(muestra)
+n
+##
+datos_prueba <- list(casilla_id = marco_tbl$casilla_id, est = as.integer(marco_tbl$estrato),
+                     num_estratos = 350, N = nrow(marco_tbl), nom = marco_tbl$ln,
+                     muestra = muestra, n = n)
+jsonlite::write_json(datos_prueba, "../datos/datos_prueba.json")
 sim_datos <- jsonlite::read_json("../datos/datos_prueba.json", simplifyVector = TRUE)
 parametros <- jsonlite::read_json("../datos/datos_inicial.json", simplifyVector = TRUE)
 print(parametros)
 ```
 
 
-```{r, message=FALSE, include=FALSE}
+```{r}
 sim_ensemble_datos <- c(sim_datos, parametros)
-ruta <- file.path("../stan/simular_ensemble_modelo.stan")
+ruta <- file.path("../stan/ensemble_modelo.stan")
 modelo_inicial <- cmdstan_model(ruta)
-ensemble <- simular_ensemble(modelo_inicial, sim_ensemble_datos, 100)
 ```
+
+
+```{r}
+ensemble <- simular_ensemble(modelo_inicial, sim_ensemble_datos, 500)
+```
+
+```{r}
+part_tbl <- ensemble$draws(c( "part_muestra", "mu", "kappa")) %>% as_draws_df()
+ggplot(part_tbl, aes(x = 100*part_muestra)) + geom_histogram()
+```
+
+
+Vemos que: 
+
+- Las simulaciones de participación cubren un rango apropiado de posibilidades,
+con más probabilidad entre 40% y 80%
 
 
 
@@ -198,7 +237,10 @@ num_iter <- 17
 sim <- ensemble$draws("y") %>% as_draws_df() %>% 
   as_tibble() %>% 
   filter(.draw == num_iter)  %>% 
-  select(-.iteration, -.chain, -.draw) %>% as.numeric()
+  select(-.iteration, -.chain, -.draw) %>% 
+  pivot_longer(everything(), "y_obs", "valor") %>% 
+  separate(y_obs, sep = "[\\[\\]]", into = c("a", "n_muestra", "c")) %>% 
+  select(-a, -c)
 ```
 
 
@@ -209,7 +251,7 @@ modelo <- cmdstan_model(ruta)
 
 
 ```{r}
-datos_1 <- c(sim_ensemble_datos, list("y" = ventas_sim %>% as.numeric))
+datos_1 <- c(sim_ensemble_datos, list("y" = sim %>% pull(value)))
 ajuste <- modelo$sample(data = datos_1,
                           seed = 2210,
                           iter_sampling = 500, iter_warmup = 500,
