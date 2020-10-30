@@ -53,3 +53,35 @@ sbc_rank <- function(params_tbl, sims_tbl){
 calcular_post_check <- function(ajuste, datos){
 
 }
+
+#### Resúmenes
+
+calcular_estratos <- function(ajuste, ensemble = NULL){
+  sims_df <- as_draws_df(ajuste$draws())
+  part_sim <- sims_df %>% select(.iteration, .draw, .chain, starts_with("p_est")) %>%
+    pivot_longer(starts_with("p_est"), names_to = "variable", values_to = "part_est") %>%
+    separate(variable, sep = "[\\[\\]]", into = c("a", "estrato_num", "c")) %>%
+    select(estrato_num, part_est)
+  if(!is.null(ensemble)){
+    valores_sim <- as_draws_df(ensemble$draws()) %>% select(.iteration, .draw, starts_with("p_est")) %>%
+      pivot_longer(starts_with("p_est"), names_to = "variable", values_to = "part_est") %>%
+      separate(variable, sep = "[\\[\\]]", into = c("a", "estrato_num", "c")) %>%
+      select(.iteration, .draw, estrato_num, part_est) %>%
+      filter(.draw == num_iter) %>% select(estrato_num, part_est)
+  }
+  f <- c(0.05, 0.95)
+  salida_tbl <- part_sim %>% group_by(estrato_num) %>%
+    summarise(cuantil = quantile(part_est, f), f = f) %>%
+    ungroup %>%
+    pivot_wider( names_from = f, values_from = cuantil, names_prefix = "part_")
+  if(!is.null(ensemble)){
+    salida_tbl <- salida_tbl %>% left_join(valores_sim)
+  }
+  salida_tbl
+}
+
+
+estimador_final <- function(ajuste, f = c(0.05, 0.5, 0.95)) {
+  as_draws_df(ajuste$draws("part_muestra")) %>%
+    summarise(cuantiles = round(quantile(part_muestra, f), 3), f = f)
+}

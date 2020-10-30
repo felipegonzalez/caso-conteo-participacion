@@ -36,23 +36,38 @@ Los estratos son principalmente dados por distritos electorales, aunque algunos
 distritos más chicos se unen para tener un mínimo de casillas especificado:
 
 - Los estratos son distritos electorales.
-- Cada distrito electoral incluye varias casillas
+- Cada distrito electoral incluye varias casillas. 
 - El tamaño de los estratos se mide con el número de casillas en todo el estrato.
 
-El marco muestral es el listado de todas las casillas:
 
+Para este ejemplo **no** consideraremos las casillas especiales, que no tienen
+una lista nominal definida. Aunque son una proporción considerablemente chica
+de los votos, podríamos tratarlos más adelante de otra forma.
+
+
+El marco muestral es el listado de todas las casillas. En este ejemplo usaremos
+datos de un solo estado.
 
 ```{r}
 load("../datos/marco_nal_2018.rda")
 marco_tbl <- marco_nal_2018 %>% 
-  select(id, casilla_id, estrato, ln) 
+  filter(ln > 0) %>% 
+  filter(id_estado == 9) %>%
+  group_by(estrato) %>% 
+  mutate(estrato_id = group_indices()) %>%
+  arrange(estrato_id) %>% 
+  ungroup %>% 
+  mutate(casilla_id = row_number()) %>% 
+  select(id, casilla_id, estrato_id, ln)
 marco_tbl
 ```
 Tenemos información de:
 
 - Localización de la casilla (estrato, estado)
-- Tamaño de la lista nominal en cada casilla
+- Tamaño de la lista nominal en cada casilla.
 - Si la casilla está en una zona rural o no.
+
+
 
 Este es un problema de muestreo para población finita, y lo enfocamos 
 de esa manera:
@@ -105,7 +120,7 @@ Las observación para una casilla particular en la muestra es $y_i$, y suponemos
 dada la lista nominal $n_i$.
 
 
-$$y_i = p_i / {n}_i$$
+$$p_i = y_i / {n}_i$$
 y modelamos como sigue:
 
 Supongamos que cada estrato tiene parámetros $p_{est}$ de partipación, y que
@@ -133,11 +148,11 @@ general de la población en cada elección particular.
 $$p_{est(i)} \sim \mathsf{Beta}(\mu, \kappa)$$
 Para la $\mu$, podemos usar datos históricos para establecer
 
-$$\mu \sim \mathsf{Beta}(0.6, 20)$$
+$$\mu \sim \mathsf{Beta}(0.5, 10)$$
 
 ```{r}
-mu_0 <- 0.6
-kappa_0 <- 20
+mu_0 <- 0.5
+kappa_0 <- 10
 qbeta(c(0.01, 0.05, 0.5, 0.95, 0.99), mu_0*kappa_0, (1-mu_0)*kappa_0)
 ```
 
@@ -147,11 +162,11 @@ de elecciones anteriores.
 
 Para la dispersión $\kappa$ usamos
 
-$$\kappa \sim \mathsf{Gamma}(1, 0.001)$$
+$$\kappa \sim \mathsf{Gamma}(100, 10)$$
 
 ```{r}
-m <- 1000
-cv <- 1
+m <- 10
+cv <- 0.1
 a <- (1/cv)^2
 b <- a/m
 c(a, b)
@@ -160,21 +175,23 @@ cuantiles <- qgamma(c(0.01, 0.99), a, b)
 cuantiles
 ```
 
-Supongamos que $\mu = 0.6$. Entonces las posibilidades para las porporciones
+Supongamos que $\mu = 0.6$. Entonces las posibilidades para las proporciones
 de votos sobre los estratos son
 
 ```{r, message= FALSE}
-p_1 <- qplot(rbeta(500, 0.4*cuantiles[1], (1-0.4)*cuantiles[1])) 
-p_2 <- qplot(rbeta(500, 0.4*cuantiles[2], (1-0.4)*cuantiles[2]))
-p_3 <- qplot(rbeta(500, 0.8*cuantiles[1], (1-0.8)*cuantiles[1]))
-p_4 <- qplot(rbeta(500, 0.8*cuantiles[2], (1-0.8)*cuantiles[2]))
+p_1 <- qplot(rbeta(500, 0.17*cuantiles[1], (1-0.17)*cuantiles[1])) 
+p_2 <- qplot(rbeta(500, 0.17*cuantiles[2], (1-0.17)*cuantiles[2]))
+p_3 <- qplot(rbeta(500, 0.82*cuantiles[1], (1-0.82)*cuantiles[1]))
+p_4 <- qplot(rbeta(500, 0.82*cuantiles[2], (1-0.82)*cuantiles[2]))
 (p_1 + p_2) / (p_3 + p_4)
 ```
 Consideramos todas estas combinaciones como casos límite de posibles
 resultados, pero creemos que no son extremadamente improbables.
 
 Ahora tenemos que poner una inicial para $\sigma_{est}$. Usaremos
-$$\log\sigma_{est(i)} \sim N(0, 1)$$
+$$\log\sigma_{est(i)} \sim N(0, \sigma)$$
+
+Con $\sigma \sim N^+(0,0.5)$ 
 
 
 Verificaremos simulando el ensemble bayesiano y calculando nuestras medidas resumen.
@@ -186,16 +203,18 @@ Verificaremos simulando el ensemble bayesiano y calculando nuestras medidas resu
 set.seed(9913)
 prop <- 0.05
 ## suponemos que la muestra se ha decidido
-muestra_tbl <- marco_tbl %>%  group_by(estrato) %>% 
+muestra_tbl <- marco_tbl %>%  group_by(estrato_id) %>% 
   mutate(seleccionada = rbinom(n(), 1, prop))
 nrow(muestra_tbl %>% filter(seleccionada==1)) / nrow(muestra_tbl)
 muestra <- muestra_tbl %>% filter(seleccionada==1) %>% 
   pull(casilla_id)
 n <- length(muestra)
 n
+num_estratos <- length(unique(muestra_tbl$estrato_id))
+num_estratos
 ##
-datos_prueba <- list(casilla_id = marco_tbl$casilla_id, est = as.integer(marco_tbl$estrato),
-                     num_estratos = 350, N = nrow(marco_tbl), nom = marco_tbl$ln,
+datos_prueba <- list(casilla_id = marco_tbl$casilla_id, est = as.integer(marco_tbl$estrato_id),
+                     num_estratos = num_estratos, N = nrow(marco_tbl), nom = marco_tbl$ln,
                      muestra = muestra, n = n)
 jsonlite::write_json(datos_prueba, "../datos/datos_prueba.json")
 sim_datos <- jsonlite::read_json("../datos/datos_prueba.json", simplifyVector = TRUE)
@@ -212,19 +231,37 @@ modelo_inicial <- cmdstan_model(ruta)
 
 
 ```{r}
-ensemble <- simular_ensemble(modelo_inicial, sim_ensemble_datos, 500)
+ensemble <- simular_ensemble(modelo_inicial, sim_ensemble_datos, 1500)
 ```
 
 ```{r}
 part_tbl <- ensemble$draws(c( "part_muestra", "mu", "kappa")) %>% as_draws_df()
-ggplot(part_tbl, aes(x = 100*part_muestra)) + geom_histogram()
+ggplot(part_tbl, aes(x = 100 * part_muestra)) + geom_histogram(bins = 15)
 ```
 
 
 Vemos que: 
 
 - Las simulaciones de participación cubren un rango apropiado de posibilidades,
-con más probabilidad entre 40% y 80%
+con más probabilidad entre 20% y 90%
+
+
+Algunas simulaciones por estrato:
+
+```{r}
+sims_ejemplo_tbl <- ensemble$draws(c("y", "p_est")) %>% as_draws_df %>% 
+  select(-.iteration, -.chain) %>% 
+  pivot_longer(-.draw, names_to = "variable", values_to = "valor") %>% 
+  separate(variable, sep = "[\\[\\]]", into = c("variable", "num", "c")) %>% 
+  select(-c)
+sims_ejemplo_tbl %>%
+  filter(variable == "y") %>%
+  mutate(estrato_id = sim_ensemble_datos$est[sim_ensemble_datos$muestra][as.integer(num)]) %>% 
+  filter(.draw == 26) %>% 
+ggplot(aes(x = factor(estrato_id), y = valor)) +
+  geom_point() +
+  facet_wrap(~.draw)
+```
 
 
 
@@ -232,15 +269,22 @@ con más probabilidad entre 40% y 80%
 
 Ahora veremos si podemos ajustar el modelo al ensemble simulado
 
+
+
+
 ```{r}
-num_iter <- 17
-sim <- ensemble$draws("y") %>% as_draws_df() %>% 
-  as_tibble() %>% 
+num_iter <- 26
+ensemble$draws(c("mu", "kappa", "sigma")) %>%
+as_draws_df() %>% 
+  as_tibble() %>% filter(.draw == num_iter)
+```
+
+
+```{r}
+sim_y <- ensemble$draws("y") %>% as_draws_df() %>% 
   filter(.draw == num_iter)  %>% 
-  select(-.iteration, -.chain, -.draw) %>% 
-  pivot_longer(everything(), "y_obs", "valor") %>% 
-  separate(y_obs, sep = "[\\[\\]]", into = c("a", "n_muestra", "c")) %>% 
-  select(-a, -c)
+  select(starts_with("y")) %>% 
+  as.numeric()
 ```
 
 
@@ -251,11 +295,11 @@ modelo <- cmdstan_model(ruta)
 
 
 ```{r}
-datos_1 <- c(sim_ensemble_datos, list("y" = sim %>% pull(value)))
-ajuste <- modelo$sample(data = datos_1,
-                          seed = 2210,
-                          iter_sampling = 500, iter_warmup = 500,
-                          refresh = 100, parallel_chains = 4,
+datos_sim <- c(sim_ensemble_datos, list("y" = sim_y))
+ajuste <- modelo$sample(data = datos_sim,
+                          seed = 22101,
+                          iter_sampling = 1000, iter_warmup = 2000,
+                          refresh = 1000, parallel_chains = 4,
                           show_messages = FALSE)
 ajuste
 ```
@@ -265,14 +309,89 @@ ajuste$cmdstan_diagnose()
 ```
 
 
+Ahora examinamos las participaciones por estratos y nuestra estimación a total:
+
+```{r}
+calcular_estratos(ajuste, ensemble) %>% 
+  ggplot(aes(x = estrato_num, ymin = part_0.05, y = part_est, ymax = part_0.95)) +
+    geom_point(colour = "red", alpha = 0.5) +
+    geom_linerange()
+```
+
+Y finalmente, nuestra estimación es
+
+```{r}
+estimador_final(ajuste)
+```
 
 ### Calibración inferencial
 
+
+
+
+
 ### Ajuste a las observaciones
+
+```{r}
+remesa <- read_delim("../datos/REMESAS0100012200.txt", delim = "|", skip = 1) %>% 
+  mutate(casilla = ifelse(TIPO_CASILLA %in% c("B", "C"), "B-C", TIPO_CASILLA)) %>% 
+  unite("id", 
+        c(iD_ESTADO, SECCION, ID_CASILLA, TIPO_CASILLA, EXT_CONTIGUA), remove = FALSE, sep = "-") %>% 
+  filter(iD_ESTADO == 9)
+muestra_obs <- left_join(remesa, marco_tbl) %>% 
+  arrange(casilla_id)
+datos_stan <- sim_ensemble_datos
+y_obs <- pull(muestra_obs, TOTAL)
+datos_stan$y <- y_obs %>% as.numeric
+datos_stan$n <- length(y_obs)
+datos_stan$muestra <- muestra_obs$casilla_id
+```
+
+
+
+```{r}
+ajuste <- modelo$sample(data = datos_stan,
+                          seed = 22101,
+                          iter_sampling = 1000, iter_warmup = 2000,
+                          refresh = 1000, parallel_chains = 4,
+                          show_messages = FALSE)
+ajuste
+```
+
+```{r}
+ajuste$cmdstan_diagnose()
+```
+
+```{r}
+ajuste
+```
+
+```{r}
+prop_obs_tbl <- muestra_obs %>% 
+  group_by(estrato_id) %>% 
+  summarise(part_obs_muestra = sum(TOTAL) / sum(LISTA_NOMINAL)) %>% 
+  mutate(estrato_num = as.character(estrato_id))
+calcular_estratos(ajuste) %>% 
+  left_join(prop_obs_tbl) %>% 
+  ggplot(aes(x = estrato_num, ymin = part_0.05, y = part_obs_muestra, ymax = part_0.95)) +
+  geom_point(colour = "red", size = 2) +
+  geom_linerange()
+```
+
+```{r}
+estimador_final(ajuste)
+```
 
 ### Verificación posterior dentro de muestra
 
+
+
+
 ### Siguientes pasos
+
+- Calibración inferencial
+- Agregar casillas especiales (que no tienen lista nominal)
+- Verificación posterior a nivel casilla
 
 ### Conclusiones
 
