@@ -119,29 +119,45 @@ Nuestras estadísticas resumen principales son:
 Las observación para una casilla particular en la muestra es $y_i$, y suponemos
 dada la lista nominal $n_i$.
 
+En primer lugar, podríamos considerar que cada casilla $y_i$ es una observación
+binomial con parámetros $(n_i, p_{est(i)})$, donde $p_{est(i)}$ es la probabilidad
+de que un votante del estrato $i$ ejerza su voto. En este caso tendríamos que el valor esperado de votos en cada casilla es 
+$n_ip_{est(i)}$ con $n_ip_{est(i)}(1-p_{est(i)})$
+
+
+Pero esta hipótesis no es realmente creíble, pues:
+
+1) Debe existir heterogeneidad en los votantes en cuanto a su probabilidad de voto,
+dentro de las casillas.
+2) Debe existir heterogeneidad en la probabilidad de que un votante vote a lo largo
+de las casillas dentro los estratos. 
+
+Esta heterogeneidad puede producir que la varianza de las observaciones dentro de cada
+estrato está más (o menos) dispersa con respecto a lo que esperaríamos con el modelo
+binomial. Por ejemplo, si en una casilla los votantes se dividen en unos que votan
+con probabilidad cercana a 1 y otros cercana a 0, esperaríamos menos dispersión. 
+Si las probabilidades de voto promedio en cada casilla son muy cercanas a la media del
+estrato, esperaríamos dispersión similar a la de una binomial, pero si este no es el caso
+podríamos observar sobredispersión con respecto a la binomial.
+
+
+De manera que introducimos un nuevo parámetro $\sigma_{est(i)}$, y
+ponemos
+
+$$y_i \sim \mathsf{Normal} \left (n_ip_{est(i)}, \sigma_{est(i)}\sqrt{n_ip_{est(i)}(1-p_{est(i)})} \right)$$
+
+Esto implica que si ponemos
 
 $$p_i = y_i / {n}_i$$
-y modelamos como sigue:
 
-Supongamos que cada estrato tiene parámetros $p_{est}$ de partipación, y que
-en cada casilla la probabilidad de que un votante ejerza su voto es $p_{est(i)}$.
-Si en cada estrato los votantes votaran independientemente unos de otros,
-tendríamos que el valor esperado de votos en cada casilla es 
-$n_ip_{est(i)}$ con varianza $n_ip_{est(i)}(1-p_{est(i)})$. Probablemente
-este supuesto no es correcto, porque los votantes de las casillas pueden comunicarse,
-son comunidades con cierta homogeneidad, etc. Podriamos sin embargo
-agregar un parámetro de sobre o sub dispersión con respecto a la binomial, y
-modelar
+entonces tenemos las observaciones
 
-$$y_i \sim \mathsf{Normal} \left (n_ip_{est(i)}, \sigma_{est(i)}^2n_ip_{est(i)}(1-p_{est(i)}) \right)$$
-De modo que
+$$p_i \sim \mathsf{Normal} \left (p_{est(i)}, \sigma_{est(i)}\sqrt{\frac{p_{est(i)}(1-p_{est(i)})}{n_i}} \right)$$
 
-$$p_i \sim \mathsf{Normal} \left (p_{est(i)}, \frac{\sigma_{est(i)}^2p_{est(i)}(1-p_{est(i)})}{n_i} \right)$$
-
-y consideramos las observaciones $p_i$ independientes dado los parámetros
+y consideramos las observaciones $p_i$ de cada casilla independientes dado los parámetros
 del estrato.
 
-Ahora es neceario poner distribuciones iniciales. En primer lugar,
+Ahora es necesario poner distribuciones iniciales. En primer lugar,
 no creemos que las $p_{est(i)}$ sean independientes, pues dependen del interés
 general de la población en cada elección particular.
 
@@ -381,6 +397,18 @@ calcular_estratos(ajuste) %>%
 ```{r}
 estimador_final(ajuste)
 ```
+
+En general observamos sobredispersión con respecto al modelo binomial:
+
+```{r}
+media_exp <- function(x) mean(exp(x))
+ajuste$draws("log_sigma_est") %>% as_draws_df() %>% 
+  select(starts_with("log_sigma")) %>% 
+  summarise(across(everything(), media_exp)) %>% 
+  pivot_longer(everything())
+```
+
+
 
 ### Verificación posterior dentro de muestra
 
